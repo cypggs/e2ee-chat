@@ -48,7 +48,7 @@ export async function generateKeyPair(): Promise<KeyPair> {
       },
       true,  // extractable (允许导出公钥)
       ['deriveKey', 'deriveBits']  // 用途: 密钥派生
-    );
+    ) as CryptoKeyPair;  // Type assertion since X25519 always returns CryptoKeyPair
 
     return {
       publicKey: keyPair.publicKey,
