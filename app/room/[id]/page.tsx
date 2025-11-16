@@ -13,6 +13,7 @@ import {
   generateUserId,
   getPublicKeyFingerprint,
 } from '@/lib/crypto';
+import { generateUniqueNickname } from '@/lib/nickname';
 import type {
   Message,
   User,
@@ -33,6 +34,10 @@ export default function ChatRoom() {
   const [userId] = useState(() => generateUserId());
   const [nickname, setNickname] = useState('');
   const [hasJoined, setHasJoined] = useState(false);
+
+  // Toast 通知状态
+  const [showToast, setShowToast] = useState(false);
+  const [toastMessage, setToastMessage] = useState('');
 
   // 房间状态
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
@@ -103,6 +108,15 @@ export default function ChatRoom() {
       verifyRoom();
     }
   }, [roomId]);
+
+  // 自动生成昵称
+  useEffect(() => {
+    if (!nickname && onlineUsers.length >= 0) {
+      const existingNicknames = onlineUsers.map((u) => u.nickname);
+      const generatedNickname = generateUniqueNickname(existingNicknames);
+      setNickname(generatedNickname);
+    }
+  }, [nickname, onlineUsers]);
 
   // 加入聊天室
   const handleJoinRoom = useCallback(async () => {
@@ -399,7 +413,9 @@ export default function ChatRoom() {
   const copyRoomLink = () => {
     const link = `${window.location.origin}/room/${roomId}`;
     navigator.clipboard.writeText(link);
-    alert('房间链接已复制到剪贴板!');
+    setToastMessage('房间链接已复制!');
+    setShowToast(true);
+    setTimeout(() => setShowToast(false), 3000);
   };
 
   // 加载中
@@ -645,6 +661,18 @@ export default function ChatRoom() {
           </div>
         </div>
       </div>
+
+      {/* Toast 通知 */}
+      {showToast && (
+        <div className="fixed bottom-4 right-4 bg-green-500 text-white px-6 py-3 rounded-lg shadow-lg animate-fade-in">
+          <div className="flex items-center gap-2">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+            </svg>
+            <span>{toastMessage}</span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
