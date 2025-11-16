@@ -39,9 +39,10 @@ export default function ChatRoom() {
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
 
-  // 加密状态
+  // 加密状态 - 使用 useRef 来避免闭包陷阱
   const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
-  const [sharedKeys, setSharedKeys] = useState<Map<string, CryptoKey>>(new Map());
+  const sharedKeysRef = useRef<Map<string, CryptoKey>>(new Map());
+  const [sharedKeysVersion, setSharedKeysVersion] = useState(0); // 触发重渲染
 
   // 聊天状态
   const [messages, setMessages] = useState<Message[]>([]);
@@ -52,6 +53,9 @@ export default function ChatRoom() {
   // Realtime Channel
   const channelRef = useRef<RealtimeChannel | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const keyPairRef = useRef<KeyPair | null>(null);
+  const userIdRef = useRef(userId);
+  const nicknameRef = useRef('');
 
   // 自动滚动到底部
   const scrollToBottom = () => {
@@ -112,10 +116,13 @@ export default function ChatRoom() {
       return;
     }
 
+    nicknameRef.current = nickname.trim();
+
     try {
       // 1. 生成密钥对
       const keys = await generateKeyPair();
       setKeyPair(keys);
+      keyPairRef.current = keys;
 
       const publicKey = await exportPublicKey(keys.publicKey);
       const fingerprint = await getPublicKeyFingerprint(keys.publicKey);
@@ -126,7 +133,7 @@ export default function ChatRoom() {
       // 2. 连接 Supabase Realtime
       const channel = supabase.channel(`room:${roomId}`, {
         config: {
-          broadcast: { self: true },
+          broadcast: { self: true },  // 接收自己的广播
           presence: { key: userId },
         },
       });
@@ -156,7 +163,7 @@ export default function ChatRoom() {
         'broadcast',
         { event: 'public-key' },
         async ({ payload }: { payload: PublicKeyBroadcast }) => {
-          if (payload.userId === userId) return; // 忽略自己的公钥
+          if (payload.userId === userIdRef.current) return; // 忽略自己的公钥
 
           try {
             console.log(`🔑 收到 ${payload.nickname} 的公钥`);
@@ -164,13 +171,21 @@ export default function ChatRoom() {
             // 导入对方的公钥
             const theirPublicKey = await importPublicKey(payload.publicKey);
 
-            // 派生共享密钥
-            const sharedKey = await deriveSharedKey(keys.privateKey, theirPublicKey);
+            // 使用 ref 获取最新的私钥
+            if (!keyPairRef.current) {
+              console.error('密钥对未初始化');
+              return;
+            }
 
-            // 保存共享密钥
-            setSharedKeys((prev) => new Map(prev).set(payload.userId, sharedKey));
+            // 派生共享密钥
+            const sharedKey = await deriveSharedKey(keyPairRef.current.privateKey, theirPublicKey);
+
+            // 保存共享密钥到 ref
+            sharedKeysRef.current.set(payload.userId, sharedKey);
+            setSharedKeysVersion((v) => v + 1); // 触发重渲染
 
             console.log(`✅ 已与 ${payload.nickname} 建立加密通道`);
+            console.log(`📊 当前共享密钥数量: ${sharedKeysRef.current.size}`);
           } catch (err) {
             console.error('密钥交换失败:', err);
           }
@@ -183,11 +198,20 @@ export default function ChatRoom() {
         { event: 'message' },
         async ({ payload }: { payload: EncryptedMessageBroadcast }) => {
           try {
-            // 获取共享密钥
-            const sharedKey = sharedKeys.get(payload.senderId);
+            const isOwnMessage = payload.senderId === userIdRef.current;
+
+            // 如果是自己发送的消息，直接使用明文（发送时已保存）
+            if (isOwnMessage) {
+              // 自己的消息已经在发送时添加了，跳过
+              return;
+            }
+
+            // 获取共享密钥 - 使用 ref 获取最新值
+            const sharedKey = sharedKeysRef.current.get(payload.senderId);
 
             if (!sharedKey) {
               console.warn(`⚠️ 未找到 ${payload.senderNickname} 的密钥,无法解密消息`);
+              console.log(`📊 当前共享密钥: `, Array.from(sharedKeysRef.current.keys()));
               return;
             }
 
@@ -200,10 +224,11 @@ export default function ChatRoom() {
               senderNickname: payload.senderNickname,
               content: decryptedContent,
               timestamp: payload.timestamp,
-              isOwn: payload.senderId === userId,
+              isOwn: false,
             };
 
             setMessages((prev) => [...prev, message]);
+            console.log(`📨 收到来自 ${payload.senderNickname} 的消息`);
           } catch (err) {
             console.error('消息解密失败:', err);
           }
@@ -217,8 +242,8 @@ export default function ChatRoom() {
 
           // 广播自己的 Presence
           await channel.track({
-            userId,
-            nickname: nickname.trim(),
+            userId: userIdRef.current,
+            nickname: nicknameRef.current,
             joinedAt: Date.now(),
           });
 
@@ -227,8 +252,8 @@ export default function ChatRoom() {
             type: 'broadcast',
             event: 'public-key',
             payload: {
-              userId,
-              nickname: nickname.trim(),
+              userId: userIdRef.current,
+              nickname: nicknameRef.current,
               publicKey,
               timestamp: Date.now(),
             } as PublicKeyBroadcast,
@@ -243,44 +268,43 @@ export default function ChatRoom() {
       console.error('加入房间失败:', err);
       setError('加入房间失败,请刷新页面重试');
     }
-  }, [nickname, roomId, userId, sharedKeys]);
+  }, [nickname, roomId, userId]);
 
   // 发送消息
   const handleSendMessage = useCallback(async () => {
     if (!messageInput.trim() || !channelRef.current || isSending) return;
 
     setIsSending(true);
+    const messageContent = messageInput.trim();
+    setMessageInput(''); // 立即清空输入框
 
     try {
       const messageId = crypto.randomUUID();
       const timestamp = Date.now();
 
       // 获取所有在线用户的共享密钥
-      const recipientKeys = Array.from(sharedKeys.entries());
+      const recipientKeys = Array.from(sharedKeysRef.current.entries());
+
+      // 无论是否有其他用户，都显示自己的消息
+      const ownMessage: Message = {
+        id: messageId,
+        senderId: userId,
+        senderNickname: nicknameRef.current,
+        content: messageContent,
+        timestamp,
+        isOwn: true,
+      };
+      setMessages((prev) => [...prev, ownMessage]);
 
       if (recipientKeys.length === 0) {
-        console.warn('⚠️ 暂无其他用户在线');
-        // 仍然显示自己的消息
-        setMessages((prev) => [
-          ...prev,
-          {
-            id: messageId,
-            senderId: userId,
-            senderNickname: nickname,
-            content: messageInput.trim(),
-            timestamp,
-            isOwn: true,
-          },
-        ]);
-        setMessageInput('');
+        console.warn('⚠️ 暂无其他用户在线，消息仅本地显示');
         setIsSending(false);
         return;
       }
 
-      // 使用第一个共享密钥加密 (在群聊场景中,可能需要为每个用户单独加密)
-      // 这里简化为使用第一个密钥,实际应该是广播模式
+      // 使用第一个共享密钥加密（对于两人聊天足够）
       const [, sharedKey] = recipientKeys[0];
-      const encrypted = await encryptMessage(messageInput.trim(), sharedKey);
+      const encrypted = await encryptMessage(messageContent, sharedKey);
 
       // 广播加密消息
       await channelRef.current.send({
@@ -289,19 +313,21 @@ export default function ChatRoom() {
         payload: {
           messageId,
           senderId: userId,
-          senderNickname: nickname,
+          senderNickname: nicknameRef.current,
           encrypted,
           timestamp,
         } as EncryptedMessageBroadcast,
       });
 
-      setMessageInput('');
+      console.log('📤 消息已发送');
     } catch (err) {
       console.error('发送消息失败:', err);
+      // 发送失败时提示用户
+      setError('消息发送失败，请重试');
     } finally {
       setIsSending(false);
     }
-  }, [messageInput, userId, nickname, sharedKeys, isSending]);
+  }, [messageInput, userId, isSending]);
 
   // 组件卸载时清理
   useEffect(() => {
@@ -414,7 +440,7 @@ export default function ChatRoom() {
 
           <div className="mt-6 pt-6 border-t border-gray-200">
             <p className="text-xs text-gray-500 text-center">
-              🔐 加入后将自动生成密钥对,所有消息均在浏览器本地加密
+              加入后将自动生成密钥对,所有消息均在浏览器本地加密
             </p>
           </div>
         </div>
@@ -457,6 +483,7 @@ export default function ChatRoom() {
             {messages.length === 0 ? (
               <div className="text-center text-gray-500 mt-8">
                 <p>暂无消息,开始聊天吧!</p>
+                <p className="text-xs mt-2">请确保对方也已加入聊天室</p>
               </div>
             ) : (
               messages.map((msg) => (
@@ -519,7 +546,7 @@ export default function ChatRoom() {
         </div>
 
         {/* Sidebar - Online Users */}
-        <div className="w-64 bg-white border-l p-4">
+        <div className="w-64 bg-white border-l p-4 hidden md:block">
           <h3 className="font-semibold text-gray-900 mb-3">
             在线用户 ({onlineUsers.length})
           </h3>
@@ -538,6 +565,12 @@ export default function ChatRoom() {
                 </span>
               </div>
             ))}
+          </div>
+
+          <div className="mt-4 pt-4 border-t border-gray-200">
+            <p className="text-xs text-gray-500 mb-2">
+              已建立加密通道: {sharedKeysRef.current.size}
+            </p>
           </div>
 
           <div className="mt-6 pt-6 border-t border-gray-200">
