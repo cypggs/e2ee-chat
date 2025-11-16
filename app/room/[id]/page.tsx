@@ -43,6 +43,7 @@ export default function ChatRoom() {
   const [roomInfo, setRoomInfo] = useState<RoomInfo | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [error, setError] = useState('');
+  const [shortUrl, setShortUrl] = useState('');
 
   // 加密状态 - 使用 useRef 来避免闭包陷阱
   const [keyPair, setKeyPair] = useState<KeyPair | null>(null);
@@ -327,6 +328,23 @@ export default function ChatRoom() {
           });
 
           setHasJoined(true);
+
+          // 生成短链接
+          const fullUrl = `${window.location.origin}/room/${roomId}`;
+          try {
+            const shortenResponse = await fetch('/api/shorten', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ url: fullUrl }),
+            });
+            const shortenData = await shortenResponse.json();
+            if (shortenData.success && shortenData.shortUrl) {
+              setShortUrl(shortenData.shortUrl);
+              console.log('✅ 短链接生成成功:', shortenData.shortUrl);
+            }
+          } catch (err) {
+            console.warn('短链接生成失败，将使用原始链接:', err);
+          }
         }
       });
 
@@ -411,9 +429,10 @@ export default function ChatRoom() {
 
   // 复制房间链接
   const copyRoomLink = () => {
-    const link = `${window.location.origin}/room/${roomId}`;
+    // 优先复制短链接，如果没有则复制原始链接
+    const link = shortUrl || `${window.location.origin}/room/${roomId}`;
     navigator.clipboard.writeText(link);
-    setToastMessage('房间链接已复制!');
+    setToastMessage(shortUrl ? '短链接已复制!' : '房间链接已复制!');
     setShowToast(true);
     setTimeout(() => setShowToast(false), 3000);
   };
@@ -537,13 +556,21 @@ export default function ChatRoom() {
           <div>
             <h1 className="font-bold text-gray-900">加密聊天室</h1>
             <p className="text-xs text-gray-500">{expiresIn} 分钟后过期</p>
+            {shortUrl && (
+              <p className="text-xs text-blue-600 mt-0.5">
+                短链接: {shortUrl}
+              </p>
+            )}
           </div>
         </div>
         <button
           onClick={copyRoomLink}
-          className="bg-blue-500 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors"
+          className="bg-blue-500 text-white text-sm px-4 py-2 rounded-lg hover:bg-blue-600 transition-colors flex items-center gap-2"
         >
-          复制邀请链接
+          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+          </svg>
+          {shortUrl ? '复制短链接' : '复制邀请链接'}
         </button>
       </header>
 
