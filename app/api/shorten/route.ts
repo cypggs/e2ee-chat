@@ -40,7 +40,8 @@ export async function POST(request: Request) {
 
     const data = await response.json();
 
-    if (!response.ok) {
+    // 检查 API 返回结果
+    if (!response.ok || data.error !== 0) {
       console.error('短链接生成失败:', data);
       return NextResponse.json(
         { error: '短链接生成失败', details: data },
@@ -48,10 +49,23 @@ export async function POST(request: Request) {
       );
     }
 
+    // dwz.net 返回格式: {"error":0,"short":"http://c3z.cn/xxxxx"}
+    const shortUrl = data.short;
+
+    if (!shortUrl) {
+      console.error('短链接字段缺失:', data);
+      return NextResponse.json(
+        { error: '短链接生成失败' },
+        { status: 500 }
+      );
+    }
+
+    console.log('✅ 短链接生成成功:', shortUrl);
+
     // 返回短链接
     return NextResponse.json({
       success: true,
-      shortUrl: data.ShortUrl || data.shortUrl || data.url,
+      shortUrl,
       original: url,
     });
   } catch (error) {
