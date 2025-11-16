@@ -215,7 +215,7 @@ export default function ChatRoom() {
       channel.on(
         'broadcast',
         { event: 'message' },
-        async ({ payload }: { payload: EncryptedMessageBroadcast }) => {
+        async ({ payload }: { payload: any }) => {
           try {
             const isOwnMessage = payload.senderId === userIdRef.current;
 
@@ -225,29 +225,63 @@ export default function ChatRoom() {
               return;
             }
 
-            // 获取共享密钥 - 使用 ref 获取最新值
-            const sharedKey = sharedKeysRef.current.get(payload.senderId);
+            // 新格式：encryptedMessages 数组
+            if (payload.encryptedMessages) {
+              // 查找属于自己的密文
+              const myEncryptedMessage = payload.encryptedMessages.find(
+                (msg: { recipientId: string }) => msg.recipientId === userIdRef.current
+              );
 
-            if (!sharedKey) {
-              console.warn(`⚠️ 未找到 ${payload.senderNickname} 的密钥,无法解密消息`);
-              console.log(`📊 当前共享密钥: `, Array.from(sharedKeysRef.current.keys()));
-              return;
+              if (!myEncryptedMessage) {
+                console.warn(`⚠️ 消息中没有给我的密文`);
+                return;
+              }
+
+              // 获取发送者的共享密钥
+              const sharedKey = sharedKeysRef.current.get(payload.senderId);
+
+              if (!sharedKey) {
+                console.warn(`⚠️ 未找到 ${payload.senderNickname} 的密钥,无法解密消息`);
+                return;
+              }
+
+              // 解密消息
+              const decryptedContent = await decryptMessage(myEncryptedMessage.encrypted, sharedKey);
+
+              const message: Message = {
+                id: payload.messageId,
+                senderId: payload.senderId,
+                senderNickname: payload.senderNickname,
+                content: decryptedContent,
+                timestamp: payload.timestamp,
+                isOwn: false,
+              };
+
+              setMessages((prev) => [...prev, message]);
+              console.log(`📨 收到来自 ${payload.senderNickname} 的消息`);
+            } else if (payload.encrypted) {
+              // 旧格式兼容：单个 encrypted 字段
+              const sharedKey = sharedKeysRef.current.get(payload.senderId);
+
+              if (!sharedKey) {
+                console.warn(`⚠️ 未找到 ${payload.senderNickname} 的密钥,无法解密消息`);
+                return;
+              }
+
+              const decryptedContent = await decryptMessage(payload.encrypted, sharedKey);
+
+              const message: Message = {
+                id: payload.messageId,
+                senderId: payload.senderId,
+                senderNickname: payload.senderNickname,
+                content: decryptedContent,
+                timestamp: payload.timestamp,
+                isOwn: false,
+              };
+
+              setMessages((prev) => [...prev, message]);
+              console.log(`📨 收到来自 ${payload.senderNickname} 的消息 (旧格式)`);
             }
-
-            // 解密消息
-            const decryptedContent = await decryptMessage(payload.encrypted, sharedKey);
-
-            const message: Message = {
-              id: payload.messageId,
-              senderId: payload.senderId,
-              senderNickname: payload.senderNickname,
-              content: decryptedContent,
-              timestamp: payload.timestamp,
-              isOwn: false,
-            };
-
-            setMessages((prev) => [...prev, message]);
-            console.log(`📨 收到来自 ${payload.senderNickname} 的消息`);
           } catch (err) {
             console.error('消息解密失败:', err);
           }
@@ -321,11 +355,15 @@ export default function ChatRoom() {
         return;
       }
 
-      // 使用第一个共享密钥加密（对于两人聊天足够）
-      const [, sharedKey] = recipientKeys[0];
-      const encrypted = await encryptMessage(messageContent, sharedKey);
+      // 为每个用户单独加密消息（群聊支持）
+      const encryptedMessages: { recipientId: string; encrypted: Awaited<ReturnType<typeof encryptMessage>> }[] = [];
 
-      // 广播加密消息
+      for (const [recipientId, sharedKey] of recipientKeys) {
+        const encrypted = await encryptMessage(messageContent, sharedKey);
+        encryptedMessages.push({ recipientId, encrypted });
+      }
+
+      // 广播加密消息（包含所有接收者的密文）
       await channelRef.current.send({
         type: 'broadcast',
         event: 'message',
@@ -333,12 +371,12 @@ export default function ChatRoom() {
           messageId,
           senderId: userId,
           senderNickname: nicknameRef.current,
-          encrypted,
+          encryptedMessages, // 新字段：每个用户对应的密文
           timestamp,
-        } as EncryptedMessageBroadcast,
+        },
       });
 
-      console.log('📤 消息已发送');
+      console.log(`📤 消息已发送给 ${recipientKeys.length} 个用户`);
     } catch (err) {
       console.error('发送消息失败:', err);
       // 发送失败时提示用户
