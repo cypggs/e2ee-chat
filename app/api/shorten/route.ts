@@ -22,12 +22,10 @@ export async function POST(request: Request) {
     const response = await fetch('https://www.dwz.net/api/url/add', {
       method: 'POST',
       headers: {
+        'Authorization': `Token ${process.env.DWZ_API_KEY || 'ooXju9ZuDqzurMJHXK9N'}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        url,
-        apikey: process.env.DWZ_API_KEY || 'ooXju9ZuDqzurMJHXK9N',
-      }),
+      body: JSON.stringify({ url }),
     });
 
     const data = await response.json();
