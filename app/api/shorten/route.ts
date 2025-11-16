@@ -18,11 +18,21 @@ export async function POST(request: Request) {
       );
     }
 
+    // 检查环境变量是否配置
+    const apiKey = process.env.DWZ_API_KEY;
+    if (!apiKey) {
+      console.error('DWZ_API_KEY 环境变量未配置');
+      return NextResponse.json(
+        { error: '短链接服务未配置' },
+        { status: 500 }
+      );
+    }
+
     // 调用短链接服务
     const response = await fetch('https://www.dwz.net/api/url/add', {
       method: 'POST',
       headers: {
-        'Authorization': `Token ${process.env.DWZ_API_KEY || 'ooXju9ZuDqzurMJHXK9N'}`,
+        'Authorization': `Token ${apiKey}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({ url }),
