@@ -166,6 +166,9 @@ export default function ChatRoom() {
           if (payload.userId === userIdRef.current) return; // 忽略自己的公钥
 
           try {
+            // 检查是否已经有这个用户的密钥
+            const existingKey = sharedKeysRef.current.get(payload.userId);
+
             console.log(`🔑 收到 ${payload.nickname} 的公钥`);
 
             // 导入对方的公钥
@@ -186,6 +189,22 @@ export default function ChatRoom() {
 
             console.log(`✅ 已与 ${payload.nickname} 建立加密通道`);
             console.log(`📊 当前共享密钥数量: ${sharedKeysRef.current.size}`);
+
+            // 如果这是新用户（之前没有密钥），回复自己的公钥
+            // 这确保了双向密钥交换
+            if (!existingKey) {
+              console.log(`📤 回复公钥给 ${payload.nickname}`);
+              await channel.send({
+                type: 'broadcast',
+                event: 'public-key',
+                payload: {
+                  userId: userIdRef.current,
+                  nickname: nicknameRef.current,
+                  publicKey,
+                  timestamp: Date.now(),
+                } as PublicKeyBroadcast,
+              });
+            }
           } catch (err) {
             console.error('密钥交换失败:', err);
           }
